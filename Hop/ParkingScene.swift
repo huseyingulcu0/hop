@@ -2607,7 +2607,7 @@ final class ParkingScene: SKScene {
     private func updateRaceChip(place: Int) {
         let text = "🏁 " + Strings.racePlace(place, of: level.racers.count + 1)
         if spotsChip.parent == nil {
-            spotsChip.position = CGPoint(x: size.width / 2, y: hudTop - 62)
+            spotsChip.position = chipAnchor
             spotsChip.zPosition = 30
             hud.addChild(spotsChip)
         }
@@ -2618,6 +2618,7 @@ final class ParkingScene: SKScene {
         let glass = makeGlass(width: label.frame.width + 32, height: 30)
         spotsChip.addChild(glass)
         spotsChip.addChild(label)
+        alignChip(width: label.frame.width + 32)
     }
 
     // MARK: Taxi
@@ -2905,7 +2906,7 @@ final class ParkingScene: SKScene {
             }
         }
         if spotsChip.parent == nil {
-            spotsChip.position = CGPoint(x: size.width / 2, y: hudTop - 62)
+            spotsChip.position = chipAnchor
             spotsChip.zPosition = 30
             hud.addChild(spotsChip)
         }
@@ -2916,6 +2917,7 @@ final class ParkingScene: SKScene {
         let glass = makeGlass(width: label.frame.width + 32, height: 30)
         spotsChip.addChild(glass)
         spotsChip.addChild(label)
+        alignChip(width: label.frame.width + 32)
     }
 
     // MARK: Spot Wars
@@ -2978,19 +2980,31 @@ final class ParkingScene: SKScene {
         }
     }
 
+    /// The mode chip's home: under the speed dial, its left edge with the dial's (the middle of
+    /// the screen belongs to the police banner and the bonus lines, which it used to sit under).
+    private var chipAnchor: CGPoint {
+        CGPoint(x: speedDial.position.x - speedRadius, y: speedDial.position.y - speedRadius - 30)
+    }
+
+    /// Lays the chip out from its anchor to the right (built centred on it).
+    private func alignChip(width: CGFloat) {
+        for child in spotsChip.children { child.position.x += width / 2 }
+    }
+
     /// "P  3 free bays" under the top bar (red with one left).
     private func setupSpotsChip() {
         spotsChip.removeAllChildren()
         spotsChip.removeFromParent()
         guard spotWars else { return }
-        spotsChip.position = CGPoint(x: size.width / 2, y: hudTop - 62)
+        spotsChip.position = chipAnchor
         spotsChip.zPosition = 30
         hud.addChild(spotsChip)
         updateSpotsChip()
         // The rule, once, under the chip: drivers with hazard lights are after the same bays
         let hint = makeLabel(Strings.spotWarsHint, size: 13, color: UIColor(red: 1, green: 0.8, blue: 0.4, alpha: 1), font: "Barlow-SemiBold")
         hint.name = "spotHint"
-        hint.position = CGPoint(x: size.width / 2, y: hudTop - 90)
+        hint.horizontalAlignmentMode = .left
+        hint.position = CGPoint(x: chipAnchor.x, y: chipAnchor.y - 28)
         hint.zPosition = 30
         hud.childNode(withName: "spotHint")?.removeFromParent()
         hud.addChild(hint)
@@ -3018,6 +3032,7 @@ final class ParkingScene: SKScene {
         spotsChip.addChild(p)
         text.position = CGPoint(x: badge.position.x + badgeSize / 2 + 8, y: 0)
         spotsChip.addChild(text)
+        alignChip(width: width)
         spotsChip.removeAction(forKey: "pulse")
         spotsChip.setScale(1)
         if urgent {
