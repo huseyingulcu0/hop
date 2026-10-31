@@ -908,7 +908,10 @@ final class Traffic {
     private(set) var raceClock: CGFloat = 0
     /// Racers that crossed the line (bot, seconds since the start), in order.
     private(set) var raceFinishes: [(bot: Int, time: CGFloat)] = []
-    private let racerTop: CGFloat = 330
+    private let racerTop: CGFloat = 360
+    /// Racers further than this from every player drive through traffic (out of view, so the
+    /// race doesn't hang on a jam nobody sees); near a player they race it for real.
+    private let racerFreeRange: CGFloat = 700
     /// Catch-up per racer (bot index → speed factor), set by the race: a racer far behind the
     /// player drives a little faster, one far ahead a little slower, so the race stays close.
     var racerBoost: [Int: CGFloat] = [:]
@@ -1184,6 +1187,9 @@ final class Traffic {
                 if stepHunter(index, dt, players: blockers.prefix(playerCars)) { continue }
                 bot = bots[index]
             }
+            if bot.racer && racersReleased && blockers.prefix(playerCars).allSatisfy({ $0.distance(to: bot.position) > racerFreeRange }) {
+                bot.ignoreBots = max(bot.ignoreBots, 0.1)
+            }
             if bot.racer && !racersReleased {
                 bot.speed = 0
                 bot.braking = true
@@ -1284,7 +1290,7 @@ final class Traffic {
                     v0 *= 1.4
                 }
             }
-            let corner = bot.racer ? 125 * bot.pace : cornerSpeed
+            let corner = bot.racer ? 160 * bot.pace : cornerSpeed
             if abs(error) > 0.35 { v0 = min(v0, corner) }
             let brakeZone: CGFloat = bot.racer ? 260 : 140
             if lastLeg && turns(bot) && distance < brakeZone {
@@ -1520,6 +1526,9 @@ final class Traffic {
                 guard abs(dx) < 50 && abs(dy) < 50 else { continue }
                 // A car let through out of sight is not pushed (no one can see it)
                 if (bots[i].ignoreBots > 0 || bots[j].ignoreBots > 0) && outOfSight(bots[i].position, players: players) { continue }
+                // A racer driving through traffic out of view is not pushed (nor does it stop)
+                if (bots[i].racer && bots[i].ignoreBots > 0) || (bots[j].racer && bots[j].ignoreBots > 0),
+                   players.allSatisfy({ $0.distance(to: bots[i].position) > racerFreeRange }) { continue }
                 guard let push = Traffic.penetration(bots[i].box, bots[j].box) else { continue }
                 overlaps += 1
                 if legacy { continue }
