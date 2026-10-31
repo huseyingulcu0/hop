@@ -856,6 +856,13 @@ struct Bot {
     var raceDone = false
     /// Seconds a racer has been stuck behind a slower car.
     var trailing: CGFloat = 0
+    /// The driver's character: how long before it honks and pulls round a blocker, whether it
+    /// goes through on amber, how long it takes to move off at green.
+    var patience: CGFloat = 1.5
+    var amberRunner = false
+    var reaction: CGFloat = 0.4
+    var greenHold: CGFloat = 0
+    var stoppedAtLight = false
 
     var box: OBB { OBB(center: position, size: Levels.carSize, angle: heading) }
 }
@@ -931,6 +938,13 @@ final class Traffic {
             bot.pace = rng.range(0.82, 1.14)
             bot.headway = rng.range(1.0, 1.8)
             bot.speed = cruise * bot.pace
+            // A third of drivers are in a hurry (quick to honk, through on amber, off the line
+            // fast), a third are relaxed, the rest in between
+            let temper = rng.unit()
+            bot.patience = temper < 0.33 ? rng.range(0.6, 1.1) : (temper < 0.66 ? rng.range(1.3, 2.0) : rng.range(2.2, 3.4))
+            bot.amberRunner = temper < 0.33 && rng.unit() < 0.7
+            bot.reaction = temper < 0.33 ? rng.range(0.15, 0.35) : rng.range(0.4, 1.0)
+            if temper < 0.33 { bot.headway = max(0.8, bot.headway - 0.3) }
             bots.append(bot)
         }
         for hunter in hunters where spots.indices.contains(hunter.spot) {
@@ -1267,9 +1281,16 @@ final class Traffic {
                 let horizontal = bot.from / map.cols == bot.to / map.cols
                 switch map.signal(at: bot.to, horizontal: horizontal, time: clock) {
                 case .green: break
-                case .yellow: if distance > 40 || bot.speed < 20 { stopLine = distance - 10 }
+                case .yellow: if (bot.amberRunner ? distance > 85 : distance > 40) || bot.speed < 20 { stopLine = distance - 10 }
                 case .red: stopLine = distance - 10
                 }
+            }
+            // Waiting at a red, then moving off a moment after green (each driver its own moment)
+            if stopLine != nil && bot.speed < 5 {
+                bot.stoppedAtLight = true
+            } else if stopLine == nil && bot.stoppedAtLight {
+                bot.stoppedAtLight = false
+                bot.greenHold = bot.reaction
             }
             if stopLine == nil && (distance < 24 || (distance < 70 && ahead < 0)) {
                 bot.waypoints.removeFirst()
@@ -1297,6 +1318,10 @@ final class Traffic {
                 v0 = min(v0, corner + (distance / brakeZone) * (v0 - corner))
             }
             if bot.passing { v0 = min(v0, bot.racer ? v0 : 55) }
+            if bot.greenHold > 0 {
+                bot.greenHold -= dt
+                v0 = min(v0, 0.5)
+            }
             // A hunter on its bay's street slows down to pull in
             if bot.approach && lastLeg { v0 = min(v0, max(28, distance * 0.8)) }
 
@@ -1408,7 +1433,7 @@ final class Traffic {
             // player's car standing in the lane gets a honk, then the bot pulls out round it
             if bot.speed < 4 && gap < 60 && stopLine == nil {
                 bot.waiting += dt
-                if blockedByPlayer && bot.waiting > 1.2 && clock - bot.honkedAt > 3.5 {
+                if blockedByPlayer && bot.waiting > bot.patience && clock - bot.honkedAt > 2.5 + bot.patience {
                     bot.honkedAt = clock
                     honks.append(bot.position)
                 }
@@ -1437,15 +1462,13 @@ final class Traffic {
                     bot.waiting = 0
                     ghosts += 1
                 }
-                if blockedByPlayer && bot.waiting > 2.5 && !bot.passing && oncomingClear(bot) {
+                if blockedByPlayer && bot.waiting > bot.patience + 1.2 && !bot.passing && oncomingClear(bot) {
                     bot.passing = true
                 }
             } else if gap > 120 || stopLine != nil {
                 bot.waiting = 0
             }
-            if bot.racer && !bot.passing && gap < 170 && leaderSpeed < v0 * 0.7 && stopLine == nil && oncomingClear(bot) {
-                bot.passing = true
-            }
+            let smart = bot.racer || (bot.hunt >= 0 && !bot.parked && !bot.approach && bot.parkT < 0)
             // A racer stuck behind slow traffic with no gap to pass: out of the players' sight it
             // slips by (in view it has to wait for a gap, like the player)
             if bot.racer && !bot.passing && gap < 150 && leaderSpeed < v0 * 0.6 && !blockedByPlayer {
@@ -1459,11 +1482,14 @@ final class Traffic {
                 bot.trailing = max(0, bot.trailing - dt)
             }
             // Hunters don't queue behind a car standing in the lane: they go round it
-            if bot.hunt >= 0 && !bot.parked && !bot.passing && !bot.approach && gap < 110 && leaderSpeed < 15
-                && bot.waiting > 0.8 && stopLine == nil && oncomingClear(bot) {
-                bot.passing = true
-            }
-            if bot.passing {
+            if smart {
+                // Context steering across the road: score its own lane, the middle and the other
+                // lane by what is ahead in each and pick the best gap (keeping right when equal)
+                bot.passing = false
+                let want = bot.ignoreBots > 0 ? 0 : chooseOffset(index, laneHeading: laneHeading, players: blockers.prefix(playerCars))
+                let rate: CGFloat = bot.racer ? 110 : 80
+                bot.offset += max(-rate * dt, min(rate * dt, want - bot.offset))
+            } else if bot.passing {
                 bot.offset = min(68, bot.offset + (bot.racer ? 120 : 40) * dt)
                 // Back into the lane once the way ahead in it is clear
                 var clearInLane = true
@@ -1494,6 +1520,46 @@ final class Traffic {
             bots[index] = bot
         }
         separate(players: blockers.prefix(playerCars))
+    }
+
+    /// Context steering across the road for a smart driver: its own lane (0), the middle (34) and
+    /// the oncoming lane (68), each scored by the cars and players ahead in it: the closer and
+    /// slower (or coming the other way), the worse. A small bias keeps it right, and a lane it is
+    /// already in gets a little credit so it doesn't weave.
+    private func chooseOffset(_ index: Int, laneHeading h: CGFloat, players: ArraySlice<CGPoint>) -> CGFloat {
+        let bot = bots[index]
+        let ch = cos(h), sh = sin(h)
+        let look = max(150, bot.speed * 1.6)
+        var bestOffset: CGFloat = 0
+        var bestScore = -CGFloat.greatestFiniteMagnitude
+        for candidate: CGFloat in [0, 34, 68] {
+            var score: CGFloat = 1 - candidate / 300
+            if abs(candidate - bot.offset) < 12 { score += 0.12 }
+            func weigh(_ p: CGPoint, speedAlong: CGFloat) {
+                let vx = p.x - bot.position.x, vy = p.y - bot.position.y
+                guard abs(vx) < look + 60 && abs(vy) < look + 60 else { return }
+                let forward = vx * ch + vy * sh
+                let lateral = (-vx * sh + vy * ch) + bot.offset          // across the road, from our lane line
+                guard forward > -26, forward < look, abs(lateral - candidate) < 27 else { return }
+                let closing = bot.speed - speedAlong
+                if closing > 4 {
+                    let time = max(0, forward - 46) / closing
+                    score -= time < 0.5 ? 3 : max(0, 1.6 - time) * 1.4
+                } else if forward < 70 {
+                    score -= 0.8
+                }
+            }
+            for other in bots.indices where other != index {
+                let o = bots[other]
+                weigh(o.position, speedAlong: o.speed * (cos(o.heading) * ch + sin(o.heading) * sh))
+            }
+            for p in players { weigh(p, speedAlong: 0) }
+            if score > bestScore {
+                bestScore = score
+                bestOffset = candidate
+            }
+        }
+        return bestOffset
     }
 
     /// The lowest-numbered car of a ring of cars each waiting for the next, if `start` is in one.

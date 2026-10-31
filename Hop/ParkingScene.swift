@@ -2524,6 +2524,12 @@ final class ParkingScene: SKScene {
                                          UIColor(red: 1, green: 0.55, blue: 0.1, alpha: 1)]
     private var racePlace: Int?
     private var raceRanks: [Int: CGFloat] = [:]
+    /// The race script (instead of plain rubber banding): each rival has a part to play relative
+    /// to the player (Kaan leads, Derya fights for the place, Volkan comes from behind) and its
+    /// pace drifts within limits toward its mark; the last fifth of the race is left to the
+    /// drivers, so the finish is earned.
+    private var raceSkill: [Int: CGFloat] = [:]
+    private var raceTotal: CGFloat = 1
     private var raceRankClock: CGFloat = 0
     private var raceFinishSeen = 0
 
@@ -2531,6 +2537,11 @@ final class ParkingScene: SKScene {
     private func setupRacers(_ traffic: Traffic) {
         racePlace = nil
         raceRanks.removeAll()
+        raceSkill.removeAll()
+        if let city = level.city {
+            let path = city.route(from: level.starts[slot].position, to: level.spots[0].center)
+            raceTotal = max(1, zip(path, path.dropFirst()).reduce(0) { $0 + $1.0.distance(to: $1.1) })
+        }
         raceRankClock = 0
         raceFinishSeen = 0
         guard level.race, !level.racers.isEmpty else { return }
@@ -2584,12 +2595,28 @@ final class ParkingScene: SKScene {
         }
         let mine = left(carPosition)
         var ahead = traffic.raceFinishes.count
+        let progress = 1 - mine / raceTotal
         var boost: [Int: CGFloat] = [:]
-        for (index, bot) in traffic.bots.enumerated() where bot.racer && !bot.raceDone {
+        var k = 0
+        for (index, bot) in traffic.bots.enumerated() where bot.racer || bot.raceDone {
+            defer { k += 1 }
+            guard bot.racer && !bot.raceDone else { continue }
             let theirs = left(bot.position)
             if theirs < mine { ahead += 1 }
-            // Catch-up: up to a third faster when far behind, a little slower when far ahead
-            boost[index] = max(0.85, min(1.35, 1 + (theirs - mine) / 2500))
+            // Its mark: metres ahead of (+) or behind (-) the player
+            let mark: CGFloat = [260, 30, -220][min(k, 2)]
+            let lead = mine - theirs
+            var skill = raceSkill[index] ?? 1
+            if progress < 0.8 {
+                // Toward the mark, at most 6 % a second, within 0.85...1.3; a quick start for all
+                let wanted = max(0.85, min(1.3, 1 + (mark - lead) / 1800 + (elapsed < 4 ? 0.12 : 0)))
+                skill += max(-0.06 * 0.25, min(0.06 * 0.25, wanted - skill))
+            } else {
+                // The final fifth: back to its own pace, slowly
+                skill += (1 - skill) * 0.02
+            }
+            raceSkill[index] = skill
+            boost[index] = skill
         }
         traffic.racerBoost = boost
         updateRaceChip(place: ahead + 1)
